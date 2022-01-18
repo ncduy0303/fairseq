@@ -84,7 +84,7 @@ class SimpleLSTMEncoder(FairseqEncoder):
         }
       
 
- import torch
+import torch
 from fairseq.models import FairseqDecoder
 
 class SimpleLSTMDecoder(FairseqDecoder):
