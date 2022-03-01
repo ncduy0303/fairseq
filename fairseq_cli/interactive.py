@@ -274,8 +274,8 @@ def main(cfg: FairseqConfig):
                     extra_symbols_to_ignore=get_symbols_to_strip_from_output(generator),
                 )
                 detok_hypo_str = decode_fn(hypo_str)
-                score = hypo["score"] / math.log(2)  # convert to base 2
-                # original hypothesis (after tokenization and BPE)
+                score = hypo["score"] # keep in in base e
+                # length normalized log probability - original hypothesis (after tokenization and BPE)
                 print("H-{}\t{}\t{}".format(id_, score, hypo_str))
                 # detokenized hypothesis
                 print("D-{}\t{}\t{}".format(id_, score, detok_hypo_str))
@@ -285,12 +285,19 @@ def main(cfg: FairseqConfig):
                         " ".join(
                             map(
                                 lambda x: "{:.4f}".format(x),
-                                # convert from base e to base 2
-                                hypo["positional_scores"].div_(math.log(2)).tolist(),
+                                # keep in in base e
+                                hypo["positional_scores"].tolist(),
                             )
                         ),
                     )
                 )
+                # length normalized attention entropy (average across attention heads and decoding layers)
+                att_ent = (torch.sum(torch.special.entr(hypo["attention"])) / hypo["attention"].shape[-1]).item()
+                print("E-{}\t{}".format(id_, att_ent))
+                # target length (number of output tokens) - length normalized probability score - not normalized probability score - not normalized log probability score
+                tgt_len = len(hypo["positional_scores"].tolist())
+                p_score = torch.exp(score)
+                print("T-{}\t{}\t{}\t{}\t{}".format(id_, tgt_len, p_score, p_score * tgt_len, score * tgt_len))
                 if cfg.generation.print_alignment:
                     alignment_str = " ".join(
                         ["{}-{}".format(src, tgt) for src, tgt in alignment]
