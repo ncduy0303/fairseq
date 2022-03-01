@@ -271,7 +271,7 @@ def _main(cfg: DictConfig, output_file):
                 )
                 detok_hypo_str = decode_fn(hypo_str)
                 if not cfg.common_eval.quiet:
-                    score = hypo["score"] / math.log(2)  # convert to base 2
+                    score = hypo["score"] # keep in base e
                     # original hypothesis (after tokenization and BPE)
                     print(
                         "H-{}\t{}\t{}".format(sample_id, score, hypo_str),
@@ -288,15 +288,21 @@ def _main(cfg: DictConfig, output_file):
                             " ".join(
                                 map(
                                     lambda x: "{:.4f}".format(x),
-                                    # convert from base e to base 2
+                                    # keep in base e
                                     hypo["positional_scores"]
-                                    .div_(math.log(2))
                                     .tolist(),
                                 )
                             ),
                         ),
                         file=output_file,
                     )
+                    # length normalized attention entropy (average across attention heads and decoding layers)
+                    att_ent = (torch.sum(torch.special.entr(hypo["attention"])) / hypo["attention"].shape[-1]).item()
+                    print("E-{}\t{}".format(sample_id, att_ent))
+                    # target length (number of output tokens) - length normalized probability score - not normalized probability score - not normalized log probability score
+                    tgt_len = len(hypo["positional_scores"].tolist())
+                    p_score = torch.exp(score)
+                    print("T-{}\t{}\t{}\t{}\t{}".format(sample_id, tgt_len, p_score, p_score * tgt_len, score * tgt_len))
 
                     if cfg.generation.print_alignment == "hard":
                         print(
