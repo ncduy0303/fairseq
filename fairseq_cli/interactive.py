@@ -297,7 +297,7 @@ def main(cfg: FairseqConfig):
                 # target length (number of output tokens) - length normalized probability score - not normalized probability score - not normalized log probability score
                 tgt_len = len(hypo["positional_scores"].tolist())
                 p_score = torch.exp(score)
-                print("T-{}\t{}\t{}\t{}\t{}".format(id_, tgt_len, p_score, p_score * tgt_len, score * tgt_len))
+                print("Z-{}\t{}\t{}\t{}\t{}".format(id_, tgt_len, p_score, p_score * tgt_len, score * tgt_len))
                 if cfg.generation.print_alignment:
                     alignment_str = " ".join(
                         ["{}-{}".format(src, tgt) for src, tgt in alignment]
