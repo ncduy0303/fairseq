@@ -302,7 +302,7 @@ def _main(cfg: DictConfig, output_file):
                     # target length (number of output tokens) - length normalized probability score - not normalized probability score - not normalized log probability score
                     tgt_len = len(hypo["positional_scores"].tolist())
                     p_score = torch.exp(score)
-                    print("T-{}\t{}\t{}\t{}\t{}".format(sample_id, tgt_len, p_score, p_score * tgt_len, score * tgt_len))
+                    print("Z-{}\t{}\t{}\t{}\t{}".format(sample_id, tgt_len, p_score, p_score * tgt_len, score * tgt_len))
 
                     if cfg.generation.print_alignment == "hard":
                         print(
