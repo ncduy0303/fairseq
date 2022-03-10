@@ -33,7 +33,13 @@ def main():
     for line in open(args.input_file):
         segment_scores.append(float(line.strip()))
         if len(segment_scores) == args.repeat_times:
-            stream.write("{}\n".format(aggregate_funcs[args.func](segment_scores)))
+            if args.func == "combo":
+                d_tp = np.mean(segment_scores) 
+                d_var = np.var(segment_scores)
+                d_combo = 1 - d_tp / d_var
+                stream.write("{}\n".format(d_combo)
+            else:
+                stream.write("{}\n".format(aggregate_funcs[args.func](segment_scores)))
             segment_scores = []
 
 
