@@ -293,7 +293,8 @@ def main(cfg: FairseqConfig):
                 )
                 # legnth normalized softmax entropy & sentence standard deviation of word probabilities
                 softmax_entropy = hypo["softmax_entropy"]
-                print("F-{}\t{}".format(id_, softmax_entropy))
+                sent_std = torch.std(hypo["positional_scores"], unbiased=False)
+                print("F-{}\t{}\t{}".format(id_, softmax_entropy, sent_std))
                 # length normalized attention entropy (average across attention heads and decoding layers)
                 att_ent = (torch.sum(torch.special.entr(hypo["attention"])) / hypo["attention"].shape[-1]).item()
                 print("E-{}\t{}".format(id_, att_ent))
