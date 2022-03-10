@@ -275,6 +275,7 @@ def main(cfg: FairseqConfig):
                 )
                 detok_hypo_str = decode_fn(hypo_str)
                 score = hypo["score"] # keep in in base e
+                softmax_entropy = hypo["softmax_entropy"]
                 # length normalized log probability - original hypothesis (after tokenization and BPE)
                 print("H-{}\t{}\t{}".format(id_, score, hypo_str))
                 # detokenized hypothesis
@@ -291,6 +292,8 @@ def main(cfg: FairseqConfig):
                         ),
                     )
                 )
+                # legnth normalized softmax entropy & sentence standard deviation of word probabilities
+                print("F-{}\t{}".format(id_, softmax_entropy))
                 # length normalized attention entropy (average across attention heads and decoding layers)
                 att_ent = (torch.sum(torch.special.entr(hypo["attention"])) / hypo["attention"].shape[-1]).item()
                 print("E-{}\t{}".format(id_, att_ent))
