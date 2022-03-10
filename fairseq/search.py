@@ -115,6 +115,7 @@ class BeamSearch(Search):
         original_batch_idxs: Optional[Tensor] = None,
     ):
         bsz, beam_size, vocab_size = lprobs.size()
+        ent = torch.sum(torch.special.entr(torch.exp(lprobs)), dim=-1).unsqueeze(-1).repeat(1, 1, vocab_size).view(bsz, -1)
 
         if step == 0:
             # at the first step all hypotheses are equally likely, so use
@@ -136,12 +137,13 @@ class BeamSearch(Search):
         )
         scores_buf = top_prediction[0]
         indices_buf = top_prediction[1]
+        ent_buf = torch.stack([ent[i, indices_buf[i]] for i in range(ent.shape[0])])
         # Project back into relative indices and beams
         beams_buf = indices_buf // vocab_size
         indices_buf = indices_buf.fmod(vocab_size)
 
         # At this point, beams_buf and indices_buf are single-dim and contain relative indices
-        return scores_buf, indices_buf, beams_buf
+        return scores_buf, indices_buf, beams_buf, ent_buf
 
 
 class PrefixConstrainedBeamSearch(Search):
