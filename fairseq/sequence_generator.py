@@ -269,12 +269,17 @@ class SequenceGenerator(nn.Module):
         scores = (
             torch.zeros(bsz * beam_size, max_len + 1).to(src_tokens).float()
         )  # +1 for eos; pad is never chosen for scoring
+        softmax_entropy_scores = (
+            torch.zeros(bsz * beam_size, max_len + 1).to(src_tokens).float()
+        )  # +1 for eos; pad is never chosen for scoring
+
         tokens = (
             torch.zeros(bsz * beam_size, max_len + 2)
             .to(src_tokens)
             .long()
             .fill_(self.pad)
         )  # +2 for eos and pad
+
         tokens[:, 0] = self.eos if bos_token is None else bos_token
         attn: Optional[Tensor] = None
 
@@ -367,12 +372,13 @@ class SequenceGenerator(nn.Module):
                 and step < prefix_tokens.size(1)
                 and step < max_len
             ):
-                lprobs, tokens, scores = self._prefix_tokens(
-                    step, lprobs, scores, tokens, prefix_tokens, beam_size
+                lprobs, tokens, scores, softmax_entropy_scores = self._prefix_tokens(
+                    step, lprobs, scores, softmax_entropy_scores, tokens, prefix_tokens, beam_size
                 )
             elif step < self.min_len:
                 # minimum length constraint (does not apply if using prefix_tokens)
                 lprobs[:, self.eos] = -math.inf
+
 
             # Record attention scores, only support avg_attn_scores is a Tensor
             if avg_attn_scores is not None:
@@ -383,13 +389,17 @@ class SequenceGenerator(nn.Module):
                 attn[:, :, step + 1].copy_(avg_attn_scores)
 
             scores = scores.type_as(lprobs)
+            softmax_entropy_scores = softmax_entropy_scores.type_as(lprobs)
+
             eos_bbsz_idx = torch.empty(0).to(
                 tokens
             )  # indices of hypothesis ending with eos (finished sentences)
             eos_scores = torch.empty(0).to(
                 scores
             )  # scores of hypothesis ending with eos (finished sentences)
-
+            eos_softmax_entropy_scores = torch.empty(0).to(
+                softmax_entropy_scores
+            )  # softmax entropy scores of hypothesis ending with eos (finished sentences)
             if self.should_set_src_lengths:
                 self.search.set_src_lengths(src_lengths)
 
@@ -397,7 +407,7 @@ class SequenceGenerator(nn.Module):
                 lprobs = self.repeat_ngram_blocker(tokens, lprobs, bsz, beam_size, step)
 
             # Shape: (batch, cand_size)
-            cand_scores, cand_indices, cand_beams = self.search.step(
+            cand_scores, cand_indices, cand_beams, cand_softmax_entropies = self.search.step(
                 step,
                 lprobs.view(bsz, -1, self.vocab_size),
                 scores.view(bsz, beam_size, -1)[:, :, :step],
@@ -427,13 +437,18 @@ class SequenceGenerator(nn.Module):
                 eos_scores = torch.masked_select(
                     cand_scores[:, :beam_size], mask=eos_mask[:, :beam_size]
                 )
+                eos_softmax_entropy_scores = torch.masked_select(
+                    cand_softmax_entropies[:, :beam_size], mask=eos_mask[:, :beam_size]
+                ) 
 
                 finalized_sents = self.finalize_hypos(
                     step,
                     eos_bbsz_idx,
                     eos_scores,
+                    eos_softmax_entropy_scores,
                     tokens,
                     scores,
+                    softmax_entropy_scores,
                     finalized,
                     finished,
                     beam_size,
@@ -473,6 +488,7 @@ class SequenceGenerator(nn.Module):
                 bbsz_offsets.resize_(new_bsz, 1)
                 cand_bbsz_idx = cand_beams.add(bbsz_offsets)
                 cand_scores = cand_scores[batch_idxs]
+                cand_softmax_entropies = cand_softmax_entropies[batch_idxs]
                 cand_indices = cand_indices[batch_idxs]
 
                 if prefix_tokens is not None:
@@ -481,6 +497,7 @@ class SequenceGenerator(nn.Module):
                 cands_to_ignore = cands_to_ignore[batch_idxs]
 
                 scores = scores.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
+                softmax_entropy_scores = softmax_entropy_scores.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
                 tokens = tokens.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
                 if attn is not None:
                     attn = attn.view(bsz, -1)[batch_idxs].view(
@@ -522,6 +539,7 @@ class SequenceGenerator(nn.Module):
             # can be selected more than once).
             active_bbsz_idx = torch.gather(cand_bbsz_idx, dim=1, index=active_hypos)
             active_scores = torch.gather(cand_scores, dim=1, index=active_hypos)
+            active_softmax_entropies = torch.gather(cand_softmax_entropies, dim=1, index=active_hypos)
 
             active_bbsz_idx = active_bbsz_idx.view(-1)
             active_scores = active_scores.view(-1)
@@ -540,12 +558,19 @@ class SequenceGenerator(nn.Module):
                 scores[:, :step] = torch.index_select(
                     scores[:, :step], dim=0, index=active_bbsz_idx
                 )
+                softmax_entropy_scores[:, :step] = torch.index_select(
+                    softmax_entropy_scores[:, :step], dim=0, index=active_bbsz_idx
+                )
             scores.view(bsz, beam_size, -1)[:, :, step] = torch.gather(
                 cand_scores, dim=1, index=active_hypos
+            )
+            softmax_entropy_scores.view(bsz, beam_size, -1)[:, :, step] = torch.gather(
+                cand_softmax_entropies, dim=1, index=active_hypos
             )
 
             # Update constraints based on which candidates were selected for the next beam
             self.search.update_constraints(active_hypos)
+
 
             # copy attention for active hypotheses
             if attn is not None:
@@ -569,7 +594,7 @@ class SequenceGenerator(nn.Module):
         return finalized
 
     def _prefix_tokens(
-        self, step: int, lprobs, scores, tokens, prefix_tokens, beam_size: int
+        self, step: int, lprobs, scores, softmax_entropy_scores, tokens, prefix_tokens, beam_size: int
     ):
         """Handle prefix tokens"""
         prefix_toks = prefix_tokens[:, step].unsqueeze(-1).repeat(1, beam_size).view(-1)
@@ -594,8 +619,9 @@ class SequenceGenerator(nn.Module):
             # copy tokens, scores and lprobs from the first beam to all beams
             tokens = self.replicate_first_beam(tokens, eos_mask_batch_dim, beam_size)
             scores = self.replicate_first_beam(scores, eos_mask_batch_dim, beam_size)
+            softmax_entropy_scores = self.replicate_first_beam(softmax_entropy_scores, eos_mask_batch_dim, beam_size)
             lprobs = self.replicate_first_beam(lprobs, eos_mask_batch_dim, beam_size)
-        return lprobs, tokens, scores
+        return lprobs, tokens, scores, softmax_entropy_scores
 
     def replicate_first_beam(self, tensor, mask, beam_size: int):
         tensor = tensor.view(-1, beam_size, tensor.size(-1))
@@ -607,8 +633,10 @@ class SequenceGenerator(nn.Module):
         step: int,
         bbsz_idx,
         eos_scores,
+        eos_softmax_entropy_scores,
         tokens,
         scores,
+        softmax_entropy_scores,
         finalized: List[List[Dict[str, Tensor]]],
         finished: List[bool],
         beam_size: int,
@@ -646,9 +674,14 @@ class SequenceGenerator(nn.Module):
         # convert from cumulative to per-position scores
         pos_scores[:, 1:] = pos_scores[:, 1:] - pos_scores[:, :-1]
 
+        pos_softmax_entropy_scores = softmax_entropy_scores.index_select(0, bbsz_idx)[:, : step + 1]
+        pos_softmax_entropy_scores[:, step] = eos_softmax_entropy_scores
+        sentence_softmax_entropy_scores = torch.sum(pos_softmax_entropy_scores, dim=-1)
+
         # normalize sentence-level scores
         if self.normalize_scores:
             eos_scores /= (step + 1) ** self.len_penalty
+            sentence_softmax_entropy_scores /= (step + 1) ** self.len_penalty
 
         # cum_unfin records which sentences in the batch are finished.
         # It helps match indexing between (a) the original sentences
@@ -678,6 +711,7 @@ class SequenceGenerator(nn.Module):
         if self.match_source_len:
             condition = step > torch.index_select(src_lengths, 0, unfin_idx)
             eos_scores = torch.where(condition, torch.tensor(-math.inf), eos_scores)
+            sentence_softmax_entropy_scores = torch.where(condition, torch.tensor(-math.inf), sentence_softmax_entropy_scores)
         sent_list: List[int] = sent.tolist()
         for i in range(bbsz_idx.size()[0]):
             # An input sentence (among those in a batch) is finished when
@@ -693,9 +727,11 @@ class SequenceGenerator(nn.Module):
                     {
                         "tokens": tokens_clone[i],
                         "score": eos_scores[i],
+                        "softmax_entropy": sentence_softmax_entropy_scores[i],
                         "attention": hypo_attn,  # src_len x tgt_len
                         "alignment": torch.empty(0),
                         "positional_scores": pos_scores[i],
+                        "positional_softmax_entropy_scores": pos_softmax_entropy_scores[i],
                     }
                 )
 
@@ -803,6 +839,7 @@ class EnsembleModel(nn.Module):
 
             attn: Optional[Tensor] = None
             decoder_len = len(decoder_out)
+
             if decoder_len > 1 and decoder_out[1] is not None:
                 if isinstance(decoder_out[1], Tensor):
                     attn = decoder_out[1]
